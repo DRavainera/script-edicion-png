@@ -1,53 +1,52 @@
 import os
 import zipfile
 import argparse
-from PIL import Image, ImageOps, ImageFilter, ImageDraw
+import base64
+import requests
+from PIL import Image
+from openai import OpenAI
 
-def add_corner_radius(image, radius):
-    """Aplica esquinas redondeadas a una imagen RGBA."""
-    mask = Image.new("L", image.size, 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rounded_rectangle([(0, 0), image.size], radius=radius, fill=255)
-    
-    result = image.copy()
-    result.putalpha(mask)
-    return result
+def encode_image_to_base64(image_path):
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
 
-def apply_material_style(image):
-    """Estilo Material Design: Esquinas ligeramente redondeadas y sombra sólida/definida."""
-    radius = max(4, int(min(image.size) * 0.03))
-    rounded = add_corner_radius(image, radius)
-    
-    padding = 20
-    new_size = (image.width + padding * 2, image.height + padding * 2)
-    canvas = Image.new("RGBA", new_size, (0, 0, 0, 0))
-    
-    shadow = Image.new("RGBA", image.size, (0, 0, 0, 80))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
-    
-    canvas.paste(shadow, (padding, padding + 8), shadow)
-    canvas.paste(rounded, (padding, padding), rounded)
-    
-    return canvas
+def process_image_with_ai(image_path, prompt, client):
+    """
+    Procesa una imagen individual usando un modelo de IA de OpenAI (GPT-4o o DALL-E) 
+    guiado por el prompt indicado.
+    """
+    try:
+        # Opcion A: Usar chat completion con vision (GPT-4o) si se solicita análisis/modificación descriptiva,
+        # Opcion B: Usar DALL-E / Images Edit si se prefiere edición directa.
+        # Aquí implementamos la llamada estándar a la API de OpenAI con soporte de imágenes y prompt.
+        
+        print(f"Procesando imagen con IA: {os.path.basename(image_path)} | Prompt: '{prompt}'")
+        
+        # Ejemplo usando OpenAI ChatCompletions con imagen (multimodal) o API de edición
+        # Nota: Ajustar según el modelo y API específica (ej. DALL-E images.edit o GPT-4o output).
+        
+        with open(image_path, "rb") as img_file:
+            response = client.images.edit(
+                image=img_file,
+                prompt=prompt,
+                n=1,
+                size="1024x1024"
+            )
+            
+        image_url = response.data[0].url
+        img_data = requests.get(image_url).content
+        
+        return img_data
+    except Exception as e:
+        print(f"Error en IA para {image_path}: {e}")
+        return None
 
-def apply_fluent_style(image):
-    """Estilo Fluent Design (Microsoft): Esquinas más redondeadas y sombra difusa (acrílica)."""
-    radius = max(8, int(min(image.size) * 0.06))
-    rounded = add_corner_radius(image, radius)
+def process_zip(zip_path, prompt, api_key=None):
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+        
+    client = OpenAI()
     
-    padding = 30
-    new_size = (image.width + padding * 2, image.height + padding * 2)
-    canvas = Image.new("RGBA", new_size, (0, 0, 0, 0))
-    
-    shadow = Image.new("RGBA", image.size, (0, 0, 0, 50))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=15))
-    
-    canvas.paste(shadow, (padding, padding + 4), shadow)
-    canvas.paste(rounded, (padding, padding), rounded)
-    
-    return canvas
-
-def process_zip(zip_path, style):
     base_dir = os.path.dirname(os.path.abspath(zip_path))
     extract_dir = os.path.join(base_dir, "temp_extracted")
     os.makedirs(extract_dir, exist_ok=True)
@@ -58,28 +57,23 @@ def process_zip(zip_path, style):
     processed_dir = os.path.join(base_dir, "temp_processed")
     os.makedirs(processed_dir, exist_ok=True)
     
-    style_lower = style.lower()
-    
+    # Bucle iterativo de una en una
     for root, _, files in os.walk(extract_dir):
         for file in files:
             if file.lower().endswith('.png'):
                 file_path = os.path.join(root, file)
-                try:
-                    with Image.open(file_path) as img:
-                        img = img.convert("RGBA")
-                        if "material" in style_lower:
-                            processed_img = apply_material_style(img)
-                        elif "fluent" in style_lower:
-                            processed_img = apply_fluent_style(img)
-                        else:
-                            processed_img = apply_material_style(img)
-                            
-                        out_path = os.path.join(processed_dir, file)
-                        processed_img.save(out_path, "PNG")
-                except Exception as e:
-                    print(f"Error procesando {file}: {e}")
+                out_path = os.path.join(processed_dir, file)
+                
+                # Llamada al agente/modelo de IA iterativo
+                img_data = process_image_with_ai(file_path, prompt, client)
+                
+                if img_data:
+                    with open(out_path, "wb") as f:
+                        f.write(img_data)
+                else:
+                    print(f"Advertencia: No se pudo procesar {file}, se omite o mantiene original.")
                     
-    zip_name = f"processed_{style_lower}_{os.path.basename(zip_path)}"
+    zip_name = f"ai_processed_zip.zip"
     output_zip_path = os.path.join(base_dir, zip_name)
     
     with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
@@ -89,15 +83,16 @@ def process_zip(zip_path, style):
                 zip_out.write(abs_path, arcname=file)
                 
     import shutil
-    shutil.rmtree(extract_dir)
-    shutil.rmtree(processed_dir)
+    shutil.rmtree(extract_dir, ignore_errors=True)
+    shutil.rmtree(processed_dir, ignore_errors=True)
     
-    print(f"¡Proceso completado! Archivo generado: {output_zip_path}")
+    print(f"¡Proceso con IA completado! Archivo generado: {output_zip_path}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Procesa PNGs en un ZIP aplicando estilos de diseño (Material o Fluent).")
+    parser = argparse.ArgumentParser(description="Procesa PNGs en un ZIP iterativamente usando un agente de IA y un prompt.")
     parser.add_argument("--zip", required=True, help="Ruta al archivo ZIP con los PNGs.")
-    parser.add_argument("--style", required=True, choices=["material", "fluent"], help="Estilo de diseño a aplicar: 'material' o 'fluent'.")
+    parser.add_argument("--prompt", required=True, help="Prompt descriptivo de la edición a realizar en cada imagen.")
+    parser.add_argument("--apikey", required=False, help="API Key de OpenAI (opcional si se define en la variable de entorno OPENAI_API_KEY).")
     
     args = parser.parse_args()
-    process_zip(args.zip, args.style)
+    process_zip(args.zip, args.prompt, args.apikey)
